@@ -13,7 +13,7 @@ from datetime import datetime
 import os
 import pytz
 
-# Disable SSL/TLS-related warnings
+# Disable SSL/TLS-related warnings in
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration

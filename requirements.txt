@@ -1,6 +1,8 @@
+logging
+asyncio
 requests
 beautifulsoup4
-pymongo
+urllib3
 deep-translator
 python-telegram-bot
 pytz

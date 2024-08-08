@@ -1,23 +1,16 @@
-import logging
 import asyncio
-import aiohttp
+import os
+import logging
+from aiohttp import web, ClientSession
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-import urllib3
-from deep_translator import GoogleTranslator
-from deep_translator.exceptions import RequestError
+from datetime import datetime
+import pytz
+from motor.motor_asyncio import AsyncIOMotorClient
 from telegram import Bot
 from telegram.constants import PollType
 from telegram.error import TelegramError
-from datetime import datetime
-import os
-import pytz
-from motor.motor_asyncio import AsyncIOMotorClient
-from asyncio_throttle import Throttler
-from aiohttp import web
-
-# Disable SSL/TLS-related warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from deep_translator import GoogleTranslator
+from deep_translator.exceptions import RequestError
 
 # Configuration
 MONGO_CONNECTION_STRING = os.environ.get('MONGO_CONNECTION_STRING')
@@ -39,11 +32,11 @@ class GoogleTranslatorWrapper:
                 return await asyncio.to_thread(self.translator.translate, text)
             except RequestError as e:
                 logger.error(f"Translation error (attempt {attempt + 1}): {e}")
-                await asyncio.sleep(2)  # Wait before retrying
+                await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"Unexpected error in translation (attempt {attempt + 1}): {e}")
-                await asyncio.sleep(2)  # Wait before retrying
-        return text  # Return original text if all attempts fail
+                await asyncio.sleep(2)
+        return text
 
 class MongoDBManager:
     def __init__(self):
@@ -63,7 +56,6 @@ class TelegramQuizBot:
     def __init__(self, token, channel_username):
         self.bot = Bot(token=token)
         self.channel_username = channel_username
-        self.throttler = Throttler(rate_limit=1, period=1)  # 1 request per second
 
     def truncate_text(self, text, max_length):
         return text[:max_length-3] + '...' if len(text) > max_length else text
@@ -74,7 +66,7 @@ class TelegramQuizBot:
         correct_option = question_doc["value_in_braces"]
         explanation = self.truncate_text(question_doc["explanation"], 200)
 
-        option_mapping = {chr(65+i): i for i in range(len(options))}  # Mapping 'A'->0, 'B'->1, etc.
+        option_mapping = {chr(65+i): i for i in range(len(options))}
 
         try:
             correct_option_id = option_mapping.get(correct_option)
@@ -82,34 +74,35 @@ class TelegramQuizBot:
                 logger.error(f"Correct option '{correct_option}' not found in options: {options}")
                 return
 
-            async with self.throttler:
-                await self.bot.send_poll(
-                    chat_id=self.channel_username,
-                    question=question,
-                    options=options,
-                    is_anonymous=True,
-                    type=PollType.QUIZ,
-                    correct_option_id=correct_option_id,
-                    explanation=explanation
-                )
+            await self.bot.send_poll(
+                chat_id=self.channel_username,
+                question=question,
+                options=options,
+                is_anonymous=True,
+                type=PollType.QUIZ,
+                correct_option_id=correct_option_id,
+                explanation=explanation
+            )
             logger.info(f"Sent poll: {question}")
         except TelegramError as e:
             logger.error(f"Failed to send poll: {e.message}")
 
-async def scrape_questions_to_mongodb():
+async def scrape_questions():
     url = "https://www.indiabix.com/current-affairs/questions-and-answers/"
     month_digit = get_current_month()
 
-    async with aiohttp.ClientSession() as session:
+    async with ClientSession() as session:
         try:
             async with session.get(url) as response:
-                response.raise_for_status()
-                soup = BeautifulSoup(await response.text(), 'html.parser')
+                text = await response.text()
+                soup = BeautifulSoup(text, 'html.parser')
                 link_elements = soup.find_all("a", class_="text-link me-3")
 
-                valid_links = [urljoin("https://www.indiabix.com/", link_element.get("href"))
-                               for link_element in link_elements
-                               if f"/current-affairs/2024-{month_digit}-" in link_element.get("href")]
+                valid_links = [
+                    f"https://www.indiabix.com{link_element.get('href')}"
+                    for link_element in link_elements
+                    if f"/current-affairs/2024-{month_digit}-" in link_element.get("href", "")
+                ]
 
                 translator = GoogleTranslatorWrapper()
                 mongo_manager = MongoDBManager()
@@ -121,15 +114,10 @@ async def scrape_questions_to_mongodb():
                     day = day.rstrip('/')
 
                     collection = await mongo_manager.get_or_create_collection(year, month)
-                    existing_question = await collection.find_one({"day": day})
-
-                    if existing_question:
-                        logger.info(f"Data for {year}-{month}-{day} already exists. Skipping.")
-                        continue
-
+                    
                     async with session.get(full_url) as response:
-                        response.raise_for_status()
-                        soup = BeautifulSoup(await response.text(), 'html.parser')
+                        text = await response.text()
+                        soup = BeautifulSoup(text, 'html.parser')
 
                         question_divs = soup.find_all("div", class_="bix-div-container")
 
@@ -150,16 +138,11 @@ async def scrape_questions_to_mongodb():
                                 translated_options = [await translator.translate(option) for option in options]
                                 translated_explanation = await translator.translate(explanation)
 
-                                option_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
-                                correct_option = value_in_braces.upper()
-                                correct_option_id = option_map.get(correct_option, 0)
-
                                 question_doc = {
                                     "question": translated_qtxt,
                                     "options": translated_options,
                                     "value_in_braces": value_in_braces,
                                     "explanation": translated_explanation,
-                                    "correct_option_id": correct_option_id,
                                     "day": day
                                 }
 
@@ -172,39 +155,39 @@ async def scrape_questions_to_mongodb():
                 await mongo_manager.close_connection()
                 return new_questions
 
-        except aiohttp.ClientError as e:
-            logger.error(f"Error fetching initial URL: {e}")
+        except Exception as e:
+            logger.error(f"Error scraping questions: {str(e)}")
             return []
-
-async def send_new_questions_to_telegram(new_questions):
-    bot = TelegramQuizBot(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_USERNAME)
-    for question in new_questions:
-        await bot.send_poll(question)
-        await asyncio.sleep(3)  # Ensure a delay to avoid hitting rate limits
-
-async def main():
-    new_questions = await scrape_questions_to_mongodb()
-    if new_questions:
-        await send_new_questions_to_telegram(new_questions)
-    else:
-        logger.info("No new questions found.")
 
 def get_current_month():
     ist = pytz.timezone('Asia/Kolkata')
     current_date = datetime.now(ist)
     return f"{current_date.month:02d}"
 
+async def send_new_questions_to_telegram(new_questions):
+    bot = TelegramQuizBot(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_USERNAME)
+    for question in new_questions:
+        await bot.send_poll(question)
+        await asyncio.sleep(3)
+
+async def main():
+    new_questions = await scrape_questions()
+    if new_questions:
+        await send_new_questions_to_telegram(new_questions)
+    else:
+        logger.info("No new questions found.")
+
+async def hello(request):
+    return web.Response(text="Hello, World! Telegram Quiz Bot is running.")
+
 async def run_task(app):
     while True:
         await main()
         await asyncio.sleep(300)  # Sleep for 5 minutes (300 seconds)
 
-async def handle(request):
-    return web.Response(text="Telegram Quiz Bot is running")
-
 app = web.Application()
-app.router.add_get("/", handle)
+app.router.add_get('/', hello)
 app.on_startup.append(lambda app: asyncio.create_task(run_task(app)))
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     web.run_app(app, port=8080)

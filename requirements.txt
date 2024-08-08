@@ -1,8 +1,6 @@
-aiohttp
+requests
 beautifulsoup4
 pymongo
 deep-translator
 python-telegram-bot
 pytz
-motor
-asyncio-throttle

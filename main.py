@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import aiohttp
 from aiohttp import web, ClientSession
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -91,7 +92,7 @@ async def scrape_questions():
     url = "https://www.indiabix.com/current-affairs/questions-and-answers/"
     month_digit = get_current_month()
 
-    async with ClientSession() as session:
+    async with ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
         try:
             async with session.get(url) as response:
                 text = await response.text()
@@ -180,6 +181,9 @@ async def main():
 async def hello(request):
     return web.Response(text="Hello, World! Telegram Quiz Bot is running.")
 
+async def health_check(request):
+    return web.Response(text="OK", status=200)
+
 async def run_task(app):
     while True:
         await main()
@@ -187,6 +191,7 @@ async def run_task(app):
 
 app = web.Application()
 app.router.add_get('/', hello)
+app.router.add_get('/health', health_check)
 app.on_startup.append(lambda app: asyncio.create_task(run_task(app)))
 
 if __name__ == '__main__':

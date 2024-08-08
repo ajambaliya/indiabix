@@ -4,26 +4,21 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import urllib3
-from pymongo import MongoClient
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import RequestError
 from telegram import Bot
-from telegram.constants import PollType, ParseMode
+from telegram.constants import PollType
 from telegram.error import TelegramError
 from datetime import datetime
 import os
 import pytz
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-import threading
-import time
 
 # Disable SSL/TLS-related warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration
-MONGO_CONNECTION_STRING = os.environ.get('MONGO_CONNECTION_STRING')
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME')
+TELEGRAM_BOT_TOKEN = '1637529837:AAFraGS_WwfTV8rj9XOhBy7PoxnbnVXBVEM'
+TELEGRAM_CHANNEL_USERNAME = '@gujtest'
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -45,26 +40,6 @@ class GoogleTranslatorWrapper:
                 logger.error(f"Unexpected error in translation (attempt {attempt + 1}): {e}")
                 time.sleep(2)  # Wait before retrying
         return text  # Return original text if all attempts fail
-
-class MongoDBManager:
-    def __init__(self):
-        self.client = MongoClient(MONGO_CONNECTION_STRING)
-        self.db = self.client["current_affairs"]
-
-    def get_or_create_collection(self, year, month):
-        return self.db[str(year)][str(month)]
-
-    def insert_question(self, collection, question_doc):
-        collection.insert_one(question_doc)
-
-    def get_question_collections(self):
-        return self.db.list_collection_names()
-
-    def get_questions_from_collection(self, collection_name):
-        return list(self.db[collection_name].find())
-
-    def close_connection(self):
-        self.client.close()
 
 class TelegramQuizBot:
     def __init__(self, token, channel_username):
@@ -106,7 +81,7 @@ def get_current_month():
     current_date = datetime.now(ist)
     return f"{current_date.month:02d}"
 
-def scrape_questions_to_mongodb():
+def scrape_latest_questions():
     try:
         url = "https://www.indiabix.com/current-affairs/questions-and-answers/"
         month_digit = get_current_month()
@@ -123,95 +98,88 @@ def scrape_questions_to_mongodb():
                 full_url = urljoin("https://www.indiabix.com/", href)
                 valid_links.append(full_url)
 
+        if not valid_links:
+            logger.info("No valid links found.")
+            return []
+
+        # Extract date from URL for sorting
+        def extract_date_from_url(url):
+            parts = url.split("/")
+            # Date is expected in the format YYYY-MM-DD
+            try:
+                return datetime.strptime(parts[-2], "%Y-%m-%d")
+            except ValueError:
+                logger.warning(f"Date extraction failed for URL: {url}")
+                return datetime.min  # Use a minimum date if parsing fails
+
+        # Sort links by date and pick the latest one
+        valid_links.sort(key=extract_date_from_url, reverse=True)
+        latest_link = valid_links[0]
+        logger.info(f"Scraping latest link: {latest_link}")
+
+        response = requests.get(latest_link, verify=False)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
         translator = GoogleTranslatorWrapper()
-        mongo_manager = MongoDBManager()
+        question_docs = []
 
-        new_questions = []
+        question_divs = soup.find_all("div", class_="bix-div-container")
 
-        for full_url in valid_links:
-            _, year, month, day = full_url.split("/")[-4:]
-            day = day.rstrip('/')
+        for question_div in question_divs:
+            try:
+                qtxt = question_div.find("div", class_="bix-td-qtxt").text.strip()
+                options_div = question_div.find("div", class_="bix-tbl-options")
+                option_rows = options_div.find_all("div", class_="bix-opt-row")
+                options = [option_row.find("div", class_="bix-td-option-val").text.strip() for option_row in option_rows]
 
-            collection = mongo_manager.get_or_create_collection(year, month)
-            existing_question = collection.find_one({"day": day})
-            
-            if existing_question:
-                logger.info(f"Data for {year}-{month}-{day} already exists. Skipping.")
-                continue
+                hidden_input = question_div.find("input", class_="jq-hdnakq")
+                value_in_braces = hidden_input['value'].split('{', 1)[-1].rsplit('}', 1)[0] if hidden_input and 'value' in hidden_input.attrs else ""
 
-            response = requests.get(full_url, verify=False)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+                answer_div = question_div.find("div", class_="bix-div-answer")
+                explanation = answer_div.find("div", class_="bix-ans-description").text.strip()
 
-            question_divs = soup.find_all("div", class_="bix-div-container")
+                translated_qtxt = translator.translate(qtxt)
+                translated_options = [translator.translate(option) for option in options]
+                translated_explanation = translator.translate(explanation)
 
-            for question_div in question_divs:
-                try:
-                    qtxt = question_div.find("div", class_="bix-td-qtxt").text.strip()
-                    options_div = question_div.find("div", class_="bix-tbl-options")
-                    option_rows = options_div.find_all("div", class_="bix-opt-row")
-                    options = [option_row.find("div", class_="bix-td-option-val").text.strip() for option_row in option_rows]
+                option_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+                correct_option = value_in_braces.upper()
+                correct_option_id = option_map.get(correct_option, 0)
 
-                    hidden_input = question_div.find("input", class_="jq-hdnakq")
-                    value_in_braces = hidden_input['value'].split('{', 1)[-1].rsplit('}', 1)[0] if hidden_input and 'value' in hidden_input.attrs else ""
+                question_doc = {
+                    "question": translated_qtxt,
+                    "options": translated_options,
+                    "value_in_braces": value_in_braces,
+                    "explanation": translated_explanation,
+                    "correct_option_id": correct_option_id
+                }
 
-                    answer_div = question_div.find("div", class_="bix-div-answer")
-                    explanation = answer_div.find("div", class_="bix-ans-description").text.strip()
+                question_docs.append(question_doc)
 
-                    translated_qtxt = translator.translate(qtxt)
-                    translated_options = [translator.translate(option) for option in options]
-                    translated_explanation = translator.translate(explanation)
+            except Exception as e:
+                logger.error(f"Error scraping content: {e}")
 
-                    option_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
-                    correct_option = value_in_braces.upper()
-                    correct_option_id = option_map.get(correct_option, 0)
-
-                    question_doc = {
-                        "question": translated_qtxt,
-                        "options": translated_options,
-                        "value_in_braces": value_in_braces,
-                        "explanation": translated_explanation,
-                        "correct_option_id": correct_option_id,
-                        "day": day
-                    }
-
-                    mongo_manager.insert_question(collection, question_doc)
-                    new_questions.append(question_doc)
-
-                except Exception as e:
-                    logger.error(f"Error scraping content: {e}")
-
-        mongo_manager.close_connection()
-        return new_questions
+        return question_docs
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching initial URL: {e}")
         return []
 
+
+
 async def send_new_questions_to_telegram(new_questions):
     bot = TelegramQuizBot(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_USERNAME)
     for question in new_questions:
         await bot.send_poll(question)
-        await asyncio.sleep(3)
+        await asyncio.sleep(3)  # Rate limit to avoid spamming
 
 async def main():
-    new_questions = scrape_questions_to_mongodb()
+    new_questions = scrape_latest_questions()
     if new_questions:
         await send_new_questions_to_telegram(new_questions)
     else:
         logger.info("No new questions found.")
 
-def run_server():
-    httpd = HTTPServer(('', 8080), SimpleHTTPRequestHandler)
-    httpd.serve_forever()
-
 if __name__ == "__main__":
-    # Start the web server in a separate thread
-    server_thread = threading.Thread(target=run_server)
-    server_thread.start()
-
-    # Run the main scraping function
     asyncio.run(main())
-
-    # Keep the script running
-    server_thread.join()

@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: '*/1 * * * *'  # Run the script every 5 minutes
+    - cron: '0 20 * * *'  # Run the script every 5 minutes
 
 jobs:
   run-script:
@@ -29,4 +29,4 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHANNEL_USERNAME: ${{ secrets.TELEGRAM_CHANNEL_USERNAME }}
       run: |
-        python main.py
+        python your-script.py

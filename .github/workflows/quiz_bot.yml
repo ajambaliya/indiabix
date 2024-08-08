@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: '*/10 * * * *'  # Run the script every 5 minutes
+    - cron: '*/1 * * * *'  # Run the script every 5 minutes
 
 jobs:
   run-script:

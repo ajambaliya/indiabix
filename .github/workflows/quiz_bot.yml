@@ -4,8 +4,6 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-  schedule:
-    - cron: '0 20 * * *'  # Run the script every 5 minutes
 
 jobs:
   run-script:

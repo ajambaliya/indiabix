@@ -4,7 +4,6 @@ import aiohttp
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import urllib3
-from pymongo import MongoClient
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import RequestError
 from telegram import Bot
@@ -14,11 +13,8 @@ from datetime import datetime
 import os
 import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
-import aiohttp
-from aiohttp import ClientSession
-import asyncio
-from aiohttp.client_exceptions import ClientError
-from asyncio_throttle import Throttler  # For rate limiting
+from asyncio_throttle import Throttler
+from aiohttp import web
 
 # Disable SSL/TLS-related warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -59,12 +55,6 @@ class MongoDBManager:
 
     async def insert_question(self, collection, question_doc):
         await collection.insert_one(question_doc)
-
-    async def get_question_collections(self):
-        return await self.db.list_collection_names()
-
-    async def get_questions_from_collection(self, collection_name):
-        return await self.db[collection_name].find().to_list(length=None)
 
     async def close_connection(self):
         self.client.close()
@@ -204,5 +194,17 @@ def get_current_month():
     current_date = datetime.now(ist)
     return f"{current_date.month:02d}"
 
+async def run_task(app):
+    while True:
+        await main()
+        await asyncio.sleep(300)  # Sleep for 5 minutes (300 seconds)
+
+async def handle(request):
+    return web.Response(text="Telegram Quiz Bot is running")
+
+app = web.Application()
+app.router.add_get("/", handle)
+app.on_startup.append(lambda app: asyncio.create_task(run_task(app)))
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, port=8080)

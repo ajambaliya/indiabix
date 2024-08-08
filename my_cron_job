@@ -1,2 +1,0 @@
-# Run the script every 5 minutes
-*/5 * * * * python /app/main.py >> /var/log/cron.log 2>&1

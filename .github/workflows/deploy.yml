@@ -1,0 +1,34 @@
+name: Deploy to Docker Hub
+
+on:
+  schedule:
+    - cron: '30 14 * * *'  # 8 PM IST (which is 2:30 PM UTC)
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install python-dotenv
+
+      - name: Build Docker image
+        run: docker build . -t ajayambaliya/my-app:latest
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Push Docker image to Docker Hub
+        run: |
+          docker push ajayambaliya/my-app:latest

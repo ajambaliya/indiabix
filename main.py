@@ -17,8 +17,8 @@ import pytz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration
-TELEGRAM_BOT_TOKEN = '1637529837:AAFraGS_WwfTV8rj9XOhBy7PoxnbnVXBVEM'
-TELEGRAM_CHANNEL_USERNAME = '@gujtest'
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME')
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

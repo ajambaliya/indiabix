@@ -1,8 +1,9 @@
 name: Telegram Quiz Bot
 
 on:
-  schedule:
-    - cron: '0 20 * * *'  # Run the script every day at 8 PM UTC (adjust the time as needed)
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   run-script:

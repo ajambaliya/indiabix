@@ -12,13 +12,18 @@ from telegram.error import TelegramError
 from datetime import datetime
 import os
 import pytz
+import pymongo
+from pymongo import MongoClient  # Import MongoClient
 
-# Disable SSL/TLS-related warnings in
+# Disable SSL/TLS-related warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration
+MONGO_CONNECTION_STRING = os.environ.get('MONGO_CONNECTION_STRING')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME')
+DB_NAME = 'indiabixurl'
+COLLECTION_NAME = 'ScrapedLinks'
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -81,42 +86,21 @@ def get_current_month():
     current_date = datetime.now(ist)
     return f"{current_date.month:02d}"
 
-def scrape_latest_questions():
+def connect_to_mongo():
+    client = MongoClient(MONGO_CONNECTION_STRING)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    return collection
+
+def get_scraped_urls(collection):
+    return set(doc['url'] for doc in collection.find({}, {'url': 1}))
+
+def store_scraped_urls(collection, urls):
+    for url in urls:
+        collection.update_one({'url': url}, {'$set': {'url': url}}, upsert=True)
+
+def scrape_latest_questions(latest_link):
     try:
-        url = "https://www.indiabix.com/current-affairs/questions-and-answers/"
-        month_digit = get_current_month()
-
-        response = requests.get(url, verify=False)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        link_elements = soup.find_all("a", class_="text-link me-3")
-
-        valid_links = []
-        for link_element in link_elements:
-            href = link_element.get("href")
-            if f"/current-affairs/2024-{month_digit}-" in href:
-                full_url = urljoin("https://www.indiabix.com/", href)
-                valid_links.append(full_url)
-
-        if not valid_links:
-            logger.info("No valid links found.")
-            return []
-
-        # Extract date from URL for sorting
-        def extract_date_from_url(url):
-            parts = url.split("/")
-            # Date is expected in the format YYYY-MM-DD
-            try:
-                return datetime.strptime(parts[-2], "%Y-%m-%d")
-            except ValueError:
-                logger.warning(f"Date extraction failed for URL: {url}")
-                return datetime.min  # Use a minimum date if parsing fails
-
-        # Sort links by date and pick the latest one
-        valid_links.sort(key=extract_date_from_url, reverse=True)
-        latest_link = valid_links[0]
-        logger.info(f"Scraping latest link: {latest_link}")
-
         response = requests.get(latest_link, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -163,10 +147,8 @@ def scrape_latest_questions():
         return question_docs
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching initial URL: {e}")
+        logger.error(f"Error fetching URL: {e}")
         return []
-
-
 
 async def send_new_questions_to_telegram(new_questions):
     bot = TelegramQuizBot(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_USERNAME)
@@ -175,9 +157,46 @@ async def send_new_questions_to_telegram(new_questions):
         await asyncio.sleep(3)  # Rate limit to avoid spamming
 
 async def main():
-    new_questions = scrape_latest_questions()
-    if new_questions:
-        await send_new_questions_to_telegram(new_questions)
+    collection = connect_to_mongo()
+    stored_urls = get_scraped_urls(collection)
+    url = "https://www.indiabix.com/current-affairs/questions-and-answers/"
+    month_digit = get_current_month()
+    
+    response = requests.get(url, verify=False)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    link_elements = soup.find_all("a", class_="text-link me-3")
+
+    valid_links = []
+    for link_element in link_elements:
+        href = link_element.get("href")
+        if f"/current-affairs/2024-{month_digit}-" in href:
+            full_url = urljoin("https://www.indiabix.com/", href)
+            if full_url not in stored_urls:
+                valid_links.append(full_url)
+
+    if not valid_links:
+        logger.info("No new valid links found.")
+        return
+
+    # Extract date from URL for sorting
+    def extract_date_from_url(url):
+        parts = url.split("/")
+        try:
+            return datetime.strptime(parts[-2], "%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"Date extraction failed for URL: {url}")
+            return datetime.min  # Use a minimum date if parsing fails
+
+    valid_links.sort(key=extract_date_from_url, reverse=True)
+    latest_link = valid_links[0]
+    logger.info(f"Scraping latest link: {latest_link}")
+
+    question_docs = scrape_latest_questions(latest_link)
+    
+    if question_docs:
+        store_scraped_urls(collection, [latest_link])
+        await send_new_questions_to_telegram(question_docs)
     else:
         logger.info("No new questions found.")
 

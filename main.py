@@ -19,7 +19,6 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_LINE_SPACING
 import tempfile
-from docx2pdf import convert
 import time
 import subprocess
 

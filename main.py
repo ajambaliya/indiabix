@@ -288,52 +288,50 @@ async def main():
         logger.info("No new valid links found.")
         return
 
-    valid_links.sort(key=lambda x: datetime.strptime(x.split("/")[-2], "%Y-%m-%d"), reverse=True)
-    latest_link = valid_links[0]
-    logger.info(f"Scraping latest link: {latest_link}")
+    for link in valid_links:
+        logger.info(f"Scraping link: {link}")
+        question_docs = scrape_latest_questions(link)
+        
+        if question_docs:
+            store_scraped_urls(collection, [link])
+            await send_new_questions_to_telegram(question_docs)
 
-    question_docs = scrape_latest_questions(latest_link)
-    
-    if question_docs:
-        store_scraped_urls(collection, [latest_link])
-        await send_new_questions_to_telegram(question_docs)
+            # Prepare content for the document
+            content_list = prepare_content_list(question_docs)
 
-        # Prepare content for the document
-        content_list = prepare_content_list(question_docs)
+            # Download and modify the template
+            template_bytes = download_template(TEMPLATE_URL)
+            doc = Document(template_bytes)
+            insert_content_between_placeholders(doc, content_list)
 
-        # Download and modify the template
-        template_bytes = download_template(TEMPLATE_URL)
-        doc = Document(template_bytes)
-        insert_content_between_placeholders(doc, content_list)
+            # Save the modified document
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_docx:
+                doc.save(tmp_docx.name)
 
-        # Save the modified document
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_docx:
-            doc.save(tmp_docx.name)
+            # Convert to PDF
+            pdf_filename = f"current_affairs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            pdf_path = os.path.abspath(pdf_filename)
+            convert_docx_to_pdf(os.path.abspath(tmp_docx.name), pdf_path)
 
-        # Convert to PDF
-        pdf_filename = f"current_affairs_{datetime.now().strftime('%Y%m%d')}.pdf"
-        pdf_path = os.path.abspath(pdf_filename)
-        convert_docx_to_pdf(os.path.abspath(tmp_docx.name), pdf_path)
+            # Extract date from the scraped link
+            quiz_date = extract_date_from_url(link)
 
-        # Extract date from the scraped link
-        quiz_date = extract_date_from_url(latest_link)
+            # Send PDF to Telegram
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            caption = (
+                f"📚 Current Affairs Quiz - {quiz_date}\n\n"
+                f"Here's a PDF containing today's quiz questions and answers.\n"
+                f"Total Questions: {len(question_docs)}\n\n"
+                f"🔍 Test your knowledge and stay updated!\n"
+                f"Join us for daily quizzes at {TELEGRAM_CHANNEL_USERNAME}"
+            )
+            await send_pdf_to_telegram(bot, TELEGRAM_CHANNEL_USERNAME, pdf_path, caption)
 
-        # Send PDF to Telegram
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        caption = (
-            f"📚 Current Affairs Quiz - {quiz_date}\n\n"
-            f"Here's a PDF containing today's quiz questions and answers.\n"
-            f"Total Questions: {len(question_docs)}\n\n"
-            f"🔍 Test your knowledge and stay updated!\n"
-            f"Join us for daily quizzes at {TELEGRAM_CHANNEL_USERNAME}"
-        )
-        await send_pdf_to_telegram(bot, TELEGRAM_CHANNEL_USERNAME, pdf_path, caption)
+            # Clean up temporary files
+            os.unlink(tmp_docx.name)
+            os.remove(pdf_path)
+        else:
+            logger.info(f"No questions found for link: {link}")
 
-        # Clean up temporary files
-        os.unlink(tmp_docx.name)
-        os.remove(pdf_path)
-    else:
-        logger.info("No new questions found.")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        # Add a delay between processing links to avoid overwhelming the server
+        await asyncio.sleep(5)

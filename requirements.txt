@@ -4,5 +4,5 @@ deep-translator
 python-telegram-bot
 pymongo
 pytz
-docx
+python-docx
 urllib3

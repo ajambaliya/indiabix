@@ -219,14 +219,22 @@ def download_template(url):
 def convert_docx_to_pdf(docx_path, pdf_path):
     try:
         # Use LibreOffice to convert DOCX to PDF
-        subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', docx_path], check=True)
+        result = subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', docx_path], 
+                                check=True, capture_output=True, text=True)
+        logger.info(f"LibreOffice conversion output: {result.stdout}")
+        logger.error(f"LibreOffice conversion error output: {result.stderr}")
+        
+        # LibreOffice places the PDF in the same directory with the same name as DOCX
         # Rename the file to the desired PDF name
-        os.rename(docx_path.replace('.docx', '.pdf'), pdf_path)
-        logger.info(f"Successfully converted DOCX to PDF: {pdf_path}")
+        pdf_temp_path = docx_path.replace('.docx', '.pdf')
+        if os.path.exists(pdf_temp_path):
+            os.rename(pdf_temp_path, pdf_path)
+            logger.info(f"Successfully converted DOCX to PDF: {pdf_path}")
+        else:
+            raise FileNotFoundError(f"PDF file not found at expected location: {pdf_temp_path}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error converting DOCX to PDF: {e}")
-        raise
-        
+        raise        
 async def send_pdf_to_telegram(bot, channel_username, pdf_path, caption):
     try:
         with open(pdf_path, 'rb') as pdf_file:

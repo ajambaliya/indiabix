@@ -217,7 +217,7 @@ def download_template(url):
         logger.error(f"Error downloading template: {e}")
         raise
 
-ddef convert_docx_to_pdf(docx_path, pdf_path):
+def convert_docx_to_pdf(docx_path, pdf_path):
     try:
         # Use LibreOffice to convert DOCX to PDF
         subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', docx_path], check=True)

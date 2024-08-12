@@ -218,23 +218,31 @@ def download_template(url):
 
 def convert_docx_to_pdf(docx_path, pdf_path):
     try:
-        # Use LibreOffice to convert DOCX to PDF
-        result = subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', docx_path], 
+        output_dir = os.path.dirname(pdf_path)
+        result = subprocess.run(['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', output_dir, docx_path], 
                                 check=True, capture_output=True, text=True)
         logger.info(f"LibreOffice conversion output: {result.stdout}")
         logger.error(f"LibreOffice conversion error output: {result.stderr}")
         
+        # Print current working directory and its contents
+        logger.info(f"Current working directory: {os.getcwd()}")
+        logger.info(f"Directory contents: {os.listdir(output_dir)}")
+        
         # LibreOffice places the PDF in the same directory with the same name as DOCX
-        # Rename the file to the desired PDF name
-        pdf_temp_path = docx_path.replace('.docx', '.pdf')
+        pdf_temp_path = os.path.join(output_dir, os.path.splitext(os.path.basename(docx_path))[0] + '.pdf')
         if os.path.exists(pdf_temp_path):
             os.rename(pdf_temp_path, pdf_path)
             logger.info(f"Successfully converted DOCX to PDF: {pdf_path}")
         else:
             raise FileNotFoundError(f"PDF file not found at expected location: {pdf_temp_path}")
     except subprocess.CalledProcessError as e:
+        logger.error(f"LibreOffice conversion failed: {e}")
+        logger.error(f"LibreOffice stderr: {e.stderr}")
+        raise
+    except Exception as e:
         logger.error(f"Error converting DOCX to PDF: {e}")
-        raise        
+        raise
+
 async def send_pdf_to_telegram(bot, channel_username, pdf_path, caption):
     try:
         with open(pdf_path, 'rb') as pdf_file:
@@ -280,15 +288,7 @@ async def main():
         logger.info("No new valid links found.")
         return
 
-    def extract_date_from_url(url):
-        parts = url.split("/")
-        try:
-            return datetime.strptime(parts[-2], "%Y-%m-%d")
-        except ValueError:
-            logger.warning(f"Date extraction failed for URL: {url}")
-            return datetime.min
-
-    valid_links.sort(key=extract_date_from_url, reverse=True)
+    valid_links.sort(key=lambda x: datetime.strptime(x.split("/")[-2], "%Y-%m-%d"), reverse=True)
     latest_link = valid_links[0]
     logger.info(f"Scraping latest link: {latest_link}")
 
@@ -312,7 +312,8 @@ async def main():
 
         # Convert to PDF
         pdf_filename = f"current_affairs_{datetime.now().strftime('%Y%m%d')}.pdf"
-        convert_docx_to_pdf(tmp_docx.name, pdf_filename)
+        pdf_path = os.path.abspath(pdf_filename)
+        convert_docx_to_pdf(os.path.abspath(tmp_docx.name), pdf_path)
 
         # Extract date from the scraped link
         quiz_date = extract_date_from_url(latest_link)
@@ -326,11 +327,11 @@ async def main():
             f"🔍 Test your knowledge and stay updated!\n"
             f"Join us for daily quizzes at {TELEGRAM_CHANNEL_USERNAME}"
         )
-        await send_pdf_to_telegram(bot, TELEGRAM_CHANNEL_USERNAME, pdf_filename, caption)
+        await send_pdf_to_telegram(bot, TELEGRAM_CHANNEL_USERNAME, pdf_path, caption)
 
         # Clean up temporary files
         os.unlink(tmp_docx.name)
-        os.remove(pdf_filename)
+        os.remove(pdf_path)
     else:
         logger.info("No new questions found.")
 

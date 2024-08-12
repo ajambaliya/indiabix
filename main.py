@@ -13,7 +13,14 @@ from datetime import datetime
 import os
 import pytz
 import pymongo
-from pymongo import MongoClient  # Import MongoClient
+from pymongo import MongoClient
+import io
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_LINE_SPACING
+import tempfile
+from docx2pdf import convert
+import time
 
 # Disable SSL/TLS-related warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -24,6 +31,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME')
 DB_NAME = 'indiabixurl'
 COLLECTION_NAME = 'ScrapedLinks'
+TEMPLATE_URL = "https://docs.google.com/document/d/1uicNeRcONkwaf8ktWHfLl0lfLP_RZGNn/edit?usp=sharing&ouid=108520131839767724661&rtpof=true&sd=true"
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -156,6 +164,88 @@ async def send_new_questions_to_telegram(new_questions):
         await bot.send_poll(question)
         await asyncio.sleep(3)  # Rate limit to avoid spamming
 
+def insert_content_between_placeholders(doc, content_list):
+    start_placeholder = end_placeholder = None
+    
+    for i, para in enumerate(doc.paragraphs):
+        if "START_CONTENT" in para.text:
+            start_placeholder = i
+        elif "END_CONTENT" in para.text:
+            end_placeholder = i
+            break
+    
+    if start_placeholder is None or end_placeholder is None:
+        raise Exception("Could not find both placeholders")
+    
+    # Remove paragraphs between placeholders
+    for _ in range(end_placeholder - start_placeholder + 1):
+        doc._body._body.remove(doc.paragraphs[start_placeholder]._element)
+    
+    # Insert new content
+    for content in content_list:
+        new_para = doc.add_paragraph()
+        run = new_para.add_run(content['text'])
+        if content['type'] == 'question':
+            run.bold = True
+            new_para.paragraph_format.space_after = Pt(6)
+        elif content['type'] in ['options', 'answer', 'explanation']:
+            new_para.paragraph_format.left_indent = Pt(20)
+            new_para.paragraph_format.space_after = Pt(0)
+        new_para.paragraph_format.line_spacing = 1.0
+
+def prepare_content_list(question_docs):
+    content_list = []
+    for i, question in enumerate(question_docs, 1):
+        content_list.extend([
+            {'type': 'question', 'text': f"Question {i}: {question['question']}"},
+            {'type': 'options', 'text': "Options:"},
+            *[{'type': 'options', 'text': f"{chr(65+j)}. {opt}"} for j, opt in enumerate(question['options'])],
+            {'type': 'answer', 'text': f"Correct Answer: {question['value_in_braces']}"},
+            {'type': 'explanation', 'text': f"Explanation: {question['explanation']}"},
+            {'type': 'space', 'text': "\n"}
+        ])
+    return content_list
+
+def download_template(url):
+    download_url = url.replace('/edit?usp=sharing', '/export?format=docx')
+    try:
+        response = requests.get(download_url)
+        response.raise_for_status()
+        return io.BytesIO(response.content)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error downloading template: {e}")
+        raise
+
+def convert_docx_to_pdf(docx_path, pdf_path):
+    try:
+        convert(docx_path, pdf_path)
+        logger.info(f"Successfully converted DOCX to PDF: {pdf_path}")
+    except Exception as e:
+        logger.error(f"Error converting DOCX to PDF: {e}")
+        raise
+
+async def send_pdf_to_telegram(bot, channel_username, pdf_path, caption):
+    try:
+        with open(pdf_path, 'rb') as pdf_file:
+            await bot.send_document(
+                chat_id=channel_username,
+                document=pdf_file,
+                caption=caption
+            )
+        logger.info(f"Sent PDF to channel: {channel_username}")
+    except TelegramError as e:
+        logger.error(f"Failed to send PDF: {e.message}")
+
+def extract_date_from_url(url):
+    parts = url.split("/")
+    try:
+        date_str = parts[-2]
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        return date_obj.strftime("%d %B %Y")
+    except (ValueError, IndexError):
+        logger.warning(f"Date extraction failed for URL: {url}")
+        return datetime.now().strftime("%d %B %Y")
+
 async def main():
     collection = connect_to_mongo()
     stored_urls = get_scraped_urls(collection)
@@ -179,14 +269,13 @@ async def main():
         logger.info("No new valid links found.")
         return
 
-    # Extract date from URL for sorting
     def extract_date_from_url(url):
         parts = url.split("/")
         try:
             return datetime.strptime(parts[-2], "%Y-%m-%d")
         except ValueError:
             logger.warning(f"Date extraction failed for URL: {url}")
-            return datetime.min  # Use a minimum date if parsing fails
+            return datetime.min
 
     valid_links.sort(key=extract_date_from_url, reverse=True)
     latest_link = valid_links[0]
@@ -197,6 +286,40 @@ async def main():
     if question_docs:
         store_scraped_urls(collection, [latest_link])
         await send_new_questions_to_telegram(question_docs)
+
+        # Prepare content for the document
+        content_list = prepare_content_list(question_docs)
+
+        # Download and modify the template
+        template_bytes = download_template(TEMPLATE_URL)
+        doc = Document(template_bytes)
+        insert_content_between_placeholders(doc, content_list)
+
+        # Save the modified document
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_docx:
+            doc.save(tmp_docx.name)
+
+        # Convert to PDF
+        pdf_filename = f"current_affairs_{datetime.now().strftime('%Y%m%d')}.pdf"
+        convert_docx_to_pdf(tmp_docx.name, pdf_filename)
+
+        # Extract date from the scraped link
+        quiz_date = extract_date_from_url(latest_link)
+
+        # Send PDF to Telegram
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        caption = (
+            f"📚 Current Affairs Quiz - {quiz_date}\n\n"
+            f"Here's a PDF containing today's quiz questions and answers.\n"
+            f"Total Questions: {len(question_docs)}\n\n"
+            f"🔍 Test your knowledge and stay updated!\n"
+            f"Join us for daily quizzes at {TELEGRAM_CHANNEL_USERNAME}"
+        )
+        await send_pdf_to_telegram(bot, TELEGRAM_CHANNEL_USERNAME, pdf_filename, caption)
+
+        # Clean up temporary files
+        os.unlink(tmp_docx.name)
+        os.remove(pdf_filename)
     else:
         logger.info("No new questions found.")
 

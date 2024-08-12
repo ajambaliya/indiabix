@@ -1,9 +1,9 @@
-logging
-asyncio
 requests
 beautifulsoup4
-urllib3
 deep-translator
 python-telegram-bot
-pytz
 pymongo
+pytz
+docx
+docx2pdf
+urllib3

@@ -101,7 +101,14 @@ def connect_to_mongo():
     return collection
 
 def get_scraped_urls(collection):
-    return set(doc['url'] for doc in collection.find({}, {'url': 1}))
+    urls = set()
+    for doc in collection.find({}, {'url': 1}):
+        if 'url' in doc:
+            urls.add(doc['url'])
+        else:
+            logger.warning(f"Document without 'url' field encountered: {doc}")
+    return urls
+
 
 def store_scraped_urls(collection, urls):
     for url in urls:
